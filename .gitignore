@@ -1,0 +1,10 @@
+# Данные и артефакты, которые не нужно коммитить
+data/
+*.csv
+*.parquet
+spark-warehouse/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
