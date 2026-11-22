@@ -1,0 +1,1954 @@
+% Здесь пишется содержание приложений
+%
+\chapter{Листинг программного кода лабораторной работы №1 первой части}\label{app:A}\vspace{\baselineskip}
+
+%Здесь можно привести полный листинг кода программы или модуля.
+
+\begin{code}
+import os
+from pyspark.sql import SparkSession, DataFrame
+from pyspark import SparkConf
+from pyspark.sql.functions import (
+    col,
+    trim,
+    unix_timestamp
+)
+
+def create_spark_configuration() -> SparkConf:
+    """
+    Создает и конфигурирует экземпляр SparkConf для приложения Spark.
+
+    Returns:
+        SparkConf: Настроенный экземпляр SparkConf.
+    """
+    # Получаем имя пользователя
+    user_name = os.getenv("USER")
+    
+    conf = SparkConf()
+    conf.setAppName("lab 1 US Accidents")
+    conf.setMaster("yarn")
+    conf.set("spark.submit.deployMode", "client")
+    conf.set("spark.executor.memory", "12g")
+    conf.set("spark.executor.cores", "8")
+    conf.set("spark.executor.instances", "2")
+    conf.set("spark.driver.memory", "4g")
+    conf.set("spark.driver.cores", "2")
+    conf.set("spark.jars.packages", "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.0")
+    conf.set("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    conf.set("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.spark_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.spark_catalog.warehouse", f"hdfs:///user/{user_name}/warehouse")
+    conf.set("spark.sql.catalog.spark_catalog.io-impl", "org.apache.iceberg.hadoop.HadoopFileIO")
+
+    return conf
+
+conf = create_spark_configuration()
+
+spark = SparkSession.builder.config(conf=conf).getOrCreate()
+spark
+
+path = "hdfs:///user/user7/otpushchennikov/data/US_Accidents_March23.csv"
+
+df = (spark.read.format("csv")
+      .option("header", "true")
+      .load(path)
+)
+
+df.show(3, truncate=25)
+
+df = df.select(
+    "ID", "Severity", "Start_Time", "End_Time", "Start_Lat", "Start_Lng", "Distance(mi)",
+    "Street", "City", "County", "State", "Zipcode", "Timezone", "Airport_Code",
+    "Weather_Timestamp", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)", "Pressure(in)",
+    "Visibility(mi)", "Wind_Direction", "Wind_Speed(mph)", "Precipitation(in)",
+    "Weather_Condition", "Bump", "Crossing", "Give_Way", "Junction", "No_Exit", "Railway",
+    "Roundabout", "Station", "Stop", "Traffic_Signal", "Turning_Loop", "Sunrise_Sunset",
+    "Civil_Twilight", "Nautical_Twilight", "Astronomical_Twilight"
+)
+
+df.show(3, truncate=25)
+
+df.printSchema()
+
+BOOLEAN_COLUMNS = [
+    "Bump", "Crossing", "Give_Way", "Junction", "No_Exit", "Railway", "Roundabout",
+    "Station", "Stop", "Traffic_Signal", "Turning_Loop"
+]
+
+FLOAT_COLUMNS = [
+    "Distance(mi)", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)", "Pressure(in)",
+    "Visibility(mi)", "Wind_Speed(mph)", "Precipitation(in)"
+]
+
+def transform_dataframe(data: DataFrame) -> DataFrame:
+    """
+    Преобразует столбцы DataFrame в указанные типы данных и
+    выполняет необходимые преобразования.
+
+    Args:
+        data (DataFrame): Исходный DataFrame.
+
+    Returns:
+        DataFrame: Преобразованный DataFrame.
+    """
+    # Целевой признак и координаты
+    data = data.withColumn("Severity",
+                           col("Severity").cast("Integer"))
+    data = data.withColumn("Start_Lat",
+                           col("Start_Lat").cast("Double"))
+    data = data.withColumn("Start_Lng",
+                           col("Start_Lng").cast("Double"))
+
+    # Временные метки
+    data = data.withColumn("Start_Time",
+                           col("Start_Time").cast("Timestamp"))
+    data = data.withColumn("End_Time",
+                           col("End_Time").cast("Timestamp"))
+    data = data.withColumn("Weather_Timestamp",
+                           col("Weather_Timestamp").cast("Timestamp"))
+
+    # Производный признак: длительность происшествия в минутах
+    data = data.withColumn("Duration_min",
+                           ((unix_timestamp(col("End_Time")) - unix_timestamp(col("Start_Time"))) / 60).cast("Float"))
+
+    # Числовые метеопризнаки: удалять единицы измерения не требуется,
+    # они вынесены в заголовки столбцов
+    for name in FLOAT_COLUMNS:
+        data = data.withColumn(name, col(name).cast("Float"))
+
+    # Булевы признаки инфраструктуры: в исходных данных это строки
+    # 'True'/'False'
+    for name in BOOLEAN_COLUMNS:
+        data = data.withColumn(name, col(name).cast("Boolean"))
+
+    # Идентификатор, почтовый индекс и адресные поля оставляем строками:
+    # индекс -- не число, а код (ведущие нули значимы)
+    data = data.withColumn("Zipcode",
+                           trim(col("Zipcode")))
+
+    return data
+
+df = transform_dataframe(df)
+
+df.show(3, truncate=25))
+
+df.printSchema()
+
+df.rdd.getNumPartitions()
+
+database_name = "otpushchennikov_database"
+table_name = "otpushchennikov_us_accidents"
+
+create_database_sql = f"""
+CREATE DATABASE IF NOT EXISTS spark_catalog.{database_name}
+"""
+
+spark.sql(create_database_sql)
+
+spark.catalog.setCurrentDatabase(database_name)
+
+# Сохранение DataFrame в виде таблицы
+df.writeTo(table_name).using("iceberg").create()
+
+for table in spark.catalog.listTables():
+    print(table.name)
+
+# spark.sql("DROP TABLE spark_catalog.otpushchennikov_database.otpushchennikov_us_accidents")
+# spark.sql("DROP DATABASE spark_catalog.otpushchennikov_database")
+
+spark.stop()
+\end{code}
+
+\chapter{Листинг программного кода лабораторной работы №1 второй части}\label{app:B}\vspace{\baselineskip}
+
+\begin{code}
+import os
+from pyspark.sql import SparkSession, DataFrame
+from pyspark import SparkConf
+from pyspark.sql.functions import (
+    col,
+    lit,
+    when,
+    count,
+    mean,
+    sum,
+    desc,
+    floor,
+    corr,
+    expr,
+    trim,
+    lower,
+    length,
+    substring,
+    month,
+    dayofweek,
+    hour
+)
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def create_spark_configuration() -> SparkConf:
+    """
+    Создает и конфигурирует экземпляр SparkConf для приложения Spark.
+
+    Returns:
+        SparkConf: Настроенный экземпляр SparkConf.
+    """
+    # Получаем имя пользователя
+    user_name = os.getenv("USER")
+    
+    conf = SparkConf()
+    conf.setAppName("lab 1 US Accidents. Part 2")
+    conf.setMaster("yarn")
+    conf.set("spark.submit.deployMode", "client")
+    conf.set("spark.executor.memory", "12g")
+    conf.set("spark.executor.cores", "8")
+    conf.set("spark.executor.instances", "2")
+    conf.set("spark.driver.memory", "4g")
+    conf.set("spark.driver.cores", "2")
+    conf.set("spark.jars.packages", "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.0")
+    conf.set("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    conf.set("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.spark_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.spark_catalog.warehouse", f"hdfs:///user/{user_name}/warehouse")
+    conf.set("spark.sql.catalog.spark_catalog.io-impl", "org.apache.iceberg.hadoop.HadoopFileIO")
+
+    return conf
+
+conf = create_spark_configuration()
+
+spark = SparkSession.builder.config(conf=conf).getOrCreate()
+spark
+
+database_name = "otpushchennikov_database"
+table_name = "otpushchennikov_us_accidents"
+
+spark.catalog.setCurrentDatabase(database_name)
+
+df = spark.table(table_name)
+
+df.show(3, truncate=25)
+
+df.printSchema()
+
+df.count()
+
+df = df.cache()
+
+def missing_overview(data: DataFrame) -> pd.DataFrame:
+    """
+    Подсчет количества и доли пропущенных значений для всех столбцов
+    датафрейма за один проход по данным.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий данные.
+
+    Returns:
+        pd.DataFrame: Таблица со столбцами `column`, `nulls`, `share`,
+            отсортированная по убыванию доли пропусков.
+    """
+    total = data.count()
+    counters = [count(when(col(name).isNull(), lit(True))).alias(str(index))
+                for index, name in enumerate(data.columns)]
+    counts = data.agg(*counters).collect()[0].asDict()
+
+    rows = [
+        (name, int(counts[str(index)]), 100.0 * int(counts[str(index)]) / total)
+        for index, name in enumerate(data.columns)
+    ]
+    overview = pd.DataFrame(rows, columns=["column", "nulls", "share"])
+    return overview.sort_values("share", ascending=False).reset_index(drop=True)
+
+missing = missing_overview(df)
+missing[missing["share"] > 0].to_string(index=False)
+
+plot_data = missing[missing["share"] > 0]
+plt.figure(figsize=(10, 6))
+sns.barplot(x="share", y="column", data=plot_data)
+plt.title("Доля пропущенных значений по столбцам")
+plt.xlabel("share, %")
+plt.ylabel("")
+plt.grid(True)
+plt.show()
+
+(df.select("ID")
+  .filter(~col("ID").rlike("^[A-Z]+-[0-9]+$"))
+  .count())
+
+(df.groupBy("ID")
+   .count()
+   .where("count > 1")
+   .count())
+
+df.select("ID").distinct().count()
+
+def count_nulls(data: DataFrame,
+                column_name: str) -> None:
+    """
+    Подсчет количества null и not null значений в указанном столбце.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий данные.
+        column_name (str): Имя столбца для подсчета null и not null значений.
+    
+    Returns:
+        None
+    """
+    # Подсчет количества null значений в указанном столбце
+    null_counts = data.select(
+        sum(col(column_name).isNull().cast("int"))
+    ).collect()[0][0]
+
+    # Подсчет количества not null значений в указанном столбце
+    not_null_counts = data.select(
+        sum(col(column_name).isNotNull().cast("int"))
+    ).collect()[0][0]
+
+    # Вывод результатов
+    print(f"Число колонок с NULL: {null_counts} "
+          f"({100 * null_counts / (null_counts + not_null_counts):.2f}%)")
+
+count_nulls(data=df, column_name="Severity")
+
+def plot_cat_distribution(data: DataFrame,
+                          column_name: str,
+                          top_n: int = 20) -> None:
+    """
+    Построение распределения категориального признака.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий данные.
+        column_name (str): Имя столбца для группировки.
+        top_n (int): Количество топ-значений для отображения.
+    
+    Returns:
+        None
+    """
+    # Группировка данных по столбцу и подсчет количества
+    categories = (
+        data
+        .groupBy(column_name)
+        .count()
+        .orderBy("count", ascending=False)
+    )
+    
+    print(f"Количество категорий признака {column_name}: {categories.count()}")
+
+    categories = (
+        categories
+        .limit(top_n)
+        .toPandas()
+    )
+    
+    # Визуализация с использованием Seaborn
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x=column_name, y="count", data=categories)
+    plt.title(f"Barplot of \"{column_name}\" counts")
+    plt.xlabel(column_name)
+    plt.ylabel("Count")
+    plt.xticks(rotation=45)
+    plt.show()
+
+plot_cat_distribution(data=df, column_name="Severity")
+
+count_nulls(data=df, column_name="Duration_min")
+
+def plot_boxplots(data: DataFrame,
+                  columns: list[str],
+                  sample_fraction: float = 0.1) -> None:
+    """
+    Построение boxplot для нескольких столбцов в PySpark DataFrame.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий данные.
+        columns (list of str): Список имен столбцов для построения boxplot.
+        sample_fraction (float): Доля данных для семплирования выбросов.
+    
+    Returns:
+        None
+    """
+    box_data = []
+
+    for column in columns:
+        # Вычисление квантилей
+        quantiles = data.approxQuantile(column, [0.25, 0.5, 0.75], 0.01)
+        q1, median, q3 = quantiles
+
+        # Вычисление IQR и границ усов
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+
+        # Вычисление минимального и максимального значений
+        min_value = data.agg({column: "min"}).collect()[0][0]
+        mean_value = data.agg({column: "mean"}).collect()[0][0]
+        std_value = data.agg({column: "stddev"}).collect()[0][0]
+        max_value = data.agg({column: "max"}).collect()[0][0]
+
+        # Фильтрация выбросов
+        outliers_df = data.filter((col(column) < lower_bound) | (col(column) > upper_bound))
+        outliers_count = outliers_df.count()
+
+        # Ограничение усов минимальным и максимальным значениями
+        lower_bound = max(lower_bound, min_value)
+        upper_bound = min(upper_bound, max_value)
+
+        # Семплирование выбросов
+        outliers = []
+        if outliers_count > 0:
+            sampled_outliers_df = outliers_df.sample(sample_fraction)
+            outliers = (
+                sampled_outliers_df
+                .select(column)
+                .limit(1000)
+                .collect()
+            )
+            outliers = [row[column] for row in outliers]
+
+        # Вывод статистических характеристик
+        print(f"{column}: {outliers_count} значений ("
+              f"{100 * outliers_count / data.count():.2f}%) вне границ "
+              f"[{lower_bound:.2f}, {upper_bound:.2f}]")
+        print(f"  Минимальное значение:          {min_value:.2f}")
+        print(f"  Среднее значение:              {mean_value:.2f}")
+        print(f"  Среднеквадратичное отклонение: {std_value:.2f}")
+        print(f"  Первый квартиль:               {q1:.2f}")
+        print(f"  Медиана:                       {median:.2f}")
+        print(f"  Третий квартиль:               {q3:.2f}")
+        print(f"  Максимальное значение:         {max_value:.2f}")
+
+        # Подготовка данных для axes.bxp
+        box_data.append({
+            'whislo': lower_bound,  # Нижняя граница усов
+            'q1': q1,               # Первый квартиль
+            'med': median,          # Медиана
+            'q3': q3,               # Третий квартиль
+            'whishi': upper_bound,  # Верхняя граница усов
+            'fliers': outliers      # Выбросы
+        })
+
+    # Построение boxplot
+    fig, ax = plt.subplots(figsize=(20, 6))
+    ax.bxp(box_data,
+           vert=False,
+           positions=range(1, len(columns) + 1), widths=0.5)
+    ax.set_yticks(range(1, len(columns) + 1))
+    ax.set_yticklabels(columns)
+    ax.set_xlabel('Value')
+    ax.set_title('Boxplots')
+    ax.grid(True)
+    plt.show()
+
+plot_boxplots(data=df, columns=["Duration_min"])
+
+def plot_quant_distribution(data: DataFrame,
+                            column: str,
+                            num_bins: int = 200) -> None:
+    """
+    Построение гистограммы для количественной переменной с
+    использованием PySpark и Seaborn.
+
+    Args:
+        data (DataFrame): DataFrame с данными.
+        column (str): Название колонки с количественной переменной.
+        num_bins (int): Количество бинов для гистограммы.
+
+    Returns:
+        None
+    """
+    data = data.filter(col(column).isNotNull())
+
+    # Находим минимальное и максимальное значения колонки
+    min_value = data.agg({column: "min"}).collect()[0][0]
+    max_value = data.agg({column: "max"}).collect()[0][0]
+
+    # Размер бина
+    bin_size = (max_value - min_value) / num_bins
+
+    # Добавляем колонку с номером бина
+    data = data.withColumn(
+        "bin",
+        floor((col(column) - min_value) / bin_size)
+    )
+
+    # Группируем по номеру бина и считаем количество строк в каждом бине
+    bin_counts = data.groupBy("bin").count()
+
+    # Преобразуем результат в Pandas DataFrame для построения гистограммы
+    bin_counts_pd = bin_counts.limit(1000).toPandas()
+    
+    # Создаем массив границ бинов
+    bin_edges = [min_value + i * bin_size for i in range(num_bins + 2)]
+    
+    # Преобразуем номера бинов в центры бинов
+    bin_centers = [
+        (bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(num_bins + 1)
+    ]
+    
+    # Добавляем центры бинов в Pandas DataFrame
+    bin_counts_pd['bin_center'] = bin_counts_pd['bin'].apply(
+        lambda x: bin_centers[int(x)]
+    )
+    
+    # Построение гистограммы с использованием Seaborn
+    plt.figure(figsize=(20, 6))
+    sns.histplot(data=bin_counts_pd, x="bin_center",
+                 weights="count", kde=True, bins=num_bins + 1)
+    plt.xlabel("Value")
+    plt.ylabel("Count")
+    plt.title(f"Распределение количественного признака \"{column}\"")
+    plt.grid(True)
+    plt.show()
+
+plot_quant_distribution(data=df, column="Duration_min")
+
+total = df.count()
+for limit_minutes in (1440, 2880, 10080):
+    n = df.filter(col("Duration_min") > limit_minutes).count()
+    print(f"Длительность больше {limit_minutes} мин: {n} записей "
+          f"({100.0 * n / total:.3f}%)")
+
+DURATION_CAP = 2880.0
+df = df.withColumn(
+    "Duration_min",
+    when(col("Duration_min") > DURATION_CAP, DURATION_CAP).otherwise(col("Duration_min"))
+)
+plot_quant_distribution(data=df, column="Duration_min")
+
+count_nulls(data=df, column_name="Distance(mi)")
+
+plot_boxplots(data=df, columns=["Distance(mi)"])
+
+(df.filter(col("Distance(mi)") > 60).count(),
+df.filter(col("Distance(mi)") > 100).count())
+
+DISTANCE_CAP = 60.0
+df = df.withColumn(
+    "Distance(mi)",
+    when(col("Distance(mi)") > DISTANCE_CAP, DISTANCE_CAP).otherwise(col("Distance(mi)")
+    )
+)
+plot_quant_distribution(data=df, column="Distance(mi)")
+
+WEATHER_COLUMNS = [
+    "Temperature(F)", "Wind_Chill(F)", "Humidity(%)", "Pressure(in)",
+    "Visibility(mi)", "Wind_Speed(mph)", "Precipitation(in)"
+]
+df.select(WEATHER_COLUMNS).describe().show(truncate=8)
+
+PHYSICAL_BOUNDS = {
+    "Temperature(F)": (-60.0, 130.0),   # правдоподобные температуры воздуха
+    "Wind_Chill(F)": (-60.0, 130.0),
+    "Humidity(%)": (0.0, 100.0),        # физический предел шкалы влажности
+    "Pressure(in)": (25.0, 32.0),       # шкала inHg для наземных наблюдений
+    "Visibility(mi)": (0.0, 90.0),
+    "Wind_Speed(mph)": (0.0, 120.0),
+    "Precipitation(in)": (0.0, 3.0),    # осадки за одно наблюдение
+}
+
+for name, (low, high) in PHYSICAL_BOUNDS.items():
+    n = df.filter((col(name) < low) | (col(name) > high)).count()
+    print(f"{name}: значений вне [{low}, {high}] -- {n} "
+          f"({100.0 * n / total:.3f}%)")
+
+def clip_out_of_bounds(data: DataFrame, bounds: dict) -> DataFrame:
+    """
+    Заменяет значения столбцов, выходящие за физически допустимые
+    границы, на пропуски.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий данные.
+        bounds (dict): Сопоставление имени столбца и кортежа (low, high).
+
+    Returns:
+        DataFrame: Датафрейм с очищенными значениями.
+    """
+    for name, (low, high) in bounds.items():
+        data = data.withColumn(
+            name,
+            when((col(name) >= low) & (col(name) <= high), col(name))
+            .otherwise(lit(None).cast(data.schema[name].dataType))
+        )
+    return data
+
+
+df = clip_out_of_bounds(df, PHYSICAL_BOUNDS)
+
+MEDIAN_FILL = ["Temperature(F)", "Wind_Chill(F)", "Humidity(%)", "Pressure(in)",
+               "Visibility(mi)", "Wind_Speed(mph)"]
+
+for name in MEDIAN_FILL:
+    median_value = df.approxQuantile(name, [0.5], 0.0001)[0]
+    print(f"Медиана {name}: {median_value:.2f}")
+    df = df.fillna({name: median_value})
+
+df = df.fillna({"Precipitation(in)": 0.0})
+
+after = missing_overview(df)
+after[after["column"].isin(WEATHER_COLUMNS)].to_string(index=False)
+
+plot_quant_distribution(data=df, column="Temperature(F)")
+
+plot_quant_distribution(data=df, column="Wind_Speed(mph)")
+
+CARDINALITY_COLUMNS = ["State", "Timezone", "Weather_Condition", "County",
+                          "Airport_Code", "City", "Street", "Zipcode",
+                          "Wind_Direction"]
+
+for name in CARDINALITY_COLUMNS:
+    n = df.filter(col(name).isNotNull()).select(name).distinct().count()
+    print(f"{name}: {n} различных значений")
+
+(df.filter(col("Zipcode").isNull()).count(),
+ df.filter(col("Zipcode").contains("-")).count(),
+ df.filter(length(col("Zipcode")) == 5).count())
+
+df = df.withColumn("Zipcode", substring(col("Zipcode"), 1, 5))
+df.filter(col("Zipcode").isNotNull()).select("Zipcode").distinct().count()
+
+df = df.drop("Street")
+df = df.fillna({"Airport_Code": "Unknown"})
+df.show(3, truncate=25)
+
+plot_cat_distribution(data=df, column_name="State", top_n=10)
+
+df = df.fillna({"Weather_Condition": "Unknown"})
+count_nulls(data=df, column_name="Weather_Condition")
+plot_cat_distribution(data=df, column_name="Weather_Condition", top_n=15)
+
+KEEP_CONDITIONS = [
+    row[0] for row in
+    df.groupBy("Weather_Condition").count()
+      .filter(col("count") > 0.001 * total)
+      .collect()
+]
+print(f"Категорий с долей более 0,1%: {len(KEEP_CONDITIONS)} из "
+      f"{df.select('Weather_Condition').distinct().count()}")
+
+df = df.withColumn(
+    "Weather_Condition",
+    when(col("Weather_Condition").isin(KEEP_CONDITIONS), col("Weather_Condition"))
+    .otherwise(lit("Other"))
+)
+plot_cat_distribution(data=df, column_name="Weather_Condition", top_n=15)
+
+print(f"Различных написаний: {df.select('Wind_Direction').distinct().count()}")
+print(f"После trim(lower): {df.select(trim(lower(col('Wind_Direction')))).distinct().count()}")
+
+(df.select(trim(lower(col("Wind_Direction"))).alias("wd"))
+   .groupBy("wd")
+   .count()
+   .orderBy("count", ascending=False)
+   .show(30, truncate=False))
+
+WIND_SYNONYMS = {"north": "n", "south": "s", "east": "e", "west": "w",
+                  "variable": "var"}
+
+df = df.withColumn("Wind_Direction", trim(lower(col("Wind_Direction"))))
+for long_name, short_name in WIND_SYNONYMS.items():
+    df = df.withColumn(
+        "Wind_Direction",
+        when(col("Wind_Direction") == long_name, lit(short_name))
+        .otherwise(col("Wind_Direction"))
+    )
+
+df = df.fillna({"Wind_Direction": "unknown"})
+df.select("Wind_Direction").distinct().count()
+
+plot_cat_distribution(data=df, column_name="Wind_Direction", top_n=12)
+
+for name in ["Timezone", "Sunrise_Sunset", "Civil_Twilight", "Nautical_Twilight",
+              "Astronomical_Twilight", "City", "County", "Zipcode"]:
+    df = df.fillna({name: "Unknown"})
+
+remaining = missing_overview(df)
+remaining[remaining["share"] > 0].to_string(index=False)
+
+df = df.drop("Weather_Timestamp")
+
+BOOLEAN_COLUMNS = [
+    "Bump", "Crossing", "Give_Way", "Junction", "No_Exit", "Railway", "Roundabout",
+    "Station", "Stop", "Traffic_Signal", "Turning_Loop"
+]
+
+counters = [count(when(col(name), lit(True))).alias(str(index))
+            for index, name in enumerate(BOOLEAN_COLUMNS)]
+true_counts = df.agg(*counters).collect()[0].asDict()
+
+shares = pd.DataFrame(
+    [(name, int(true_counts[str(index)]), 100.0 * int(true_counts[str(index)]) / total)
+     for index, name in enumerate(BOOLEAN_COLUMNS)],
+    columns=["column", "true", "share"]
+).sort_values("share", ascending=False)
+shares.to_string(index=False)
+
+LOW_VARIANCE = [name for name, share in zip(shares["column"], shares["share"]) if share < 0.1]
+print("Удаляемые признаки:", LOW_VARIANCE)
+df = df.drop(*LOW_VARIANCE)
+df.show(3, truncate=25)
+
+plot_cat_distribution(data=df, column_name="Traffic_Signal")
+
+df = (df
+      .withColumn("Month", month(col("Start_Time")))
+      .withColumn("Day_Of_Week", dayofweek(col("Start_Time")))
+      .withColumn("Hour", hour(col("Start_Time"))))
+df.select("Start_Time", "Month", "Day_Of_Week", "Hour").show(5, truncate=False)
+
+month_counts = df.groupBy("Month").count().orderBy("Month").toPandas()
+plt.figure(figsize=(12, 5))
+sns.barplot(x="Month", y="count", data=month_counts)
+plt.title("Число происшествий по месяцам")
+plt.xlabel("месяц")
+plt.ylabel("count")
+plt.grid(True)
+plt.show()
+
+day_counts = df.groupBy("Day_Of_Week").count().orderBy("Day_Of_Week").toPandas()
+# В Spark нумерация дней недели начинается с воскресенья: 1 = Sun, ..., 7 = Sat
+day_counts["day_name"] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+plt.figure(figsize=(10, 5))
+sns.barplot(x="day_name", y="count", data=day_counts)
+plt.title("Число происшествий по дням недели")
+plt.xlabel("")
+plt.ylabel("count")
+plt.grid(True)
+plt.show()
+
+hour_counts = df.groupBy("Hour").count().orderBy("Hour").toPandas()
+plt.figure(figsize=(12, 5))
+sns.lineplot(x="Hour", y="count", marker="o", data=hour_counts)
+plt.title("Число происшествий по часам суток")
+plt.xlabel("час")
+plt.ylabel("count")
+plt.grid(True)
+plt.show()
+
+def plot_grouped_boxplots(data: DataFrame,
+                          y_column: str,
+                          x_column: str,
+                          top_n: int = 20) -> None:
+    """
+    Диаграмма «ящик с усами» для количественного столбца в разрезе
+    категориального столбца.
+
+    Args:
+        data (DataFrame): DataFrame с данными.
+        y_column (str): количественный столбец (ось значений).
+        x_column (str): категориальный столбец (ось групп).
+        top_n (int): число самых частых категорий для вывода.
+
+    Returns:
+        None
+    """
+    groups = (data.groupBy(x_column).count()
+              .orderBy(desc("count"))
+              .limit(top_n)
+              .toPandas()[x_column].tolist())
+
+    stats = (data.filter(col(x_column).isin(groups))
+             .groupBy(x_column)
+             .agg(
+                 expr(f"percentile_approx(`{y_column}`, "
+                      f"array(0.25, 0.5, 0.75), 1000) AS q"),
+                 expr(f"min(`{y_column}`) AS min_value"),
+                 expr(f"max(`{y_column}`) AS max_value"),
+                 expr(f"count(`{y_column}`) AS n"),
+             )
+             .toPandas())
+
+    stats["q1"] = stats["q"].apply(lambda value: value[0])
+    stats["median"] = stats["q"].apply(lambda value: value[1])
+    stats["q3"] = stats["q"].apply(lambda value: value[2])
+    stats["iqr"] = stats["q3"] - stats["q1"]
+    stats["lower"] = [max(q1 - 1.5 * spread, smallest)
+                      for q1, spread, smallest in
+                      zip(stats["q1"], stats["iqr"], stats["min_value"])]
+    stats["upper"] = [min(q3 + 1.5 * spread, largest)
+                     for q3, spread, largest in
+                     zip(stats["q3"], stats["iqr"], stats["max_value"])]
+    stats = stats.sort_values("median")
+
+    print(f"{y_column} по {x_column}: "
+          f"медианы групп от {stats['median'].min():.2f} "
+          f"до {stats['median'].max():.2f}, "
+          f"размах медиан {stats['median'].max() - stats['median'].min():.2f}, "
+          f"средний межквартильный размах {stats['iqr'].mean():.2f}")
+    print(stats[[x_column, "n", "q1", "median", "q3", "iqr"]]
+          .to_string(index=False))
+
+    boxes = [
+        {
+            "whislo": row.lower,
+            "q1": row.q1,
+            "med": row.median,
+            "q3": row.q3,
+            "whishi": row.upper,
+            "fliers": [],
+        }
+        for row in stats.itertuples()
+    ]
+
+    fig, ax = plt.subplots(figsize=(20, 6))
+    ax.bxp(boxes, positions=range(1, len(boxes) + 1), widths=0.6)
+    ax.set_xticks(range(1, len(boxes) + 1))
+    ax.set_xticklabels(stats[x_column].astype(str).tolist(), rotation=90)
+    ax.set_xlabel(x_column)
+    ax.set_ylabel(y_column)
+    ax.set_title(f"{y_column} в разрезе {x_column} "
+                 f"(точки выбросов не показываются)")
+    ax.grid(True)
+    plt.show()
+
+plot_grouped_boxplots(data=df, y_column="Temperature(F)",
+                      x_column="State", top_n=20)
+
+plot_grouped_boxplots(data=df, y_column="Temperature(F)",
+                      x_column="Month", top_n=12)
+
+plot_grouped_boxplots(data=df, y_column="Wind_Speed(mph)",
+                      x_column="Month", top_n=12)
+
+plot_grouped_boxplots(data=df, y_column="Duration_min",
+                      x_column="Severity", top_n=4)
+
+df = df.cache()
+df.count()
+
+def compute_and_visualize_correlation_matrix(data: DataFrame,
+                                             columns: list[str]) -> None:
+    """
+    Вычисляет и визуализирует корреляционную матрицу для указанных
+    колонок в DataFrame PySpark.
+
+    Args:
+        data (DataFrame): DataFrame PySpark.
+        columns (list[str]): Список колонок для вычисления корреляции.
+
+    Returns:
+        None
+    """
+    # Вычисление корреляционной матрицы
+    corr_matrix = {c1: {c2: 1.0 for c2 in columns} for c1 in columns}
+    for index, col1 in enumerate(columns):
+        for col2 in columns[index + 1:]:
+            corr_value = data.select(corr(col1, col2)).collect()[0][0]
+            corr_matrix[col1][col2] = corr_value
+            corr_matrix[col2][col1] = corr_value
+
+    # Преобразование корреляционной матрицы в DataFrame Pandas для визуализации
+    corr_matrix_pd = pd.DataFrame(corr_matrix)
+
+    # Числа самых сильных связей проще прочитать в тексте, чем на тепловой карте
+    pairs = pd.DataFrame(
+        [(col1, col2, corr_matrix[col1][col2])
+         for index, col1 in enumerate(columns) for col2 in columns[index + 1:]],
+        columns=["column_1", "column_2", "corr"]
+    )
+    pairs["abs_corr"] = pairs["corr"].abs()
+    print(pairs.sort_values("abs_corr", ascending=False)
+          .head(8)
+          .to_string(index=False))
+
+    # Построение и визуализация корреляционной матрицы
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_matrix_pd, annot=True, fmt=".2f", cmap="coolwarm", linewidths=0.5)
+    plt.title("Correlation Matrix")
+    plt.show()
+
+compute_and_visualize_correlation_matrix(
+    data=df, columns=[
+        "Severity", "Distance(mi)", "Duration_min", "Temperature(F)",
+        "Wind_Chill(F)", "Humidity(%)", "Pressure(in)", "Visibility(mi)",
+        "Wind_Speed(mph)", "Precipitation(in)"
+    ]
+)
+
+df.count()
+
+df.printSchema()
+
+# Сохранение DataFrame в виде таблицы
+df.writeTo("otpushchennikov_us_accidents_processed").using("iceberg").create()
+
+for table in spark.catalog.listTables():
+    print(table.name)
+
+# spark.sql("DROP TABLE spark_catalog.otpushchennikov_database.otpushchennikov_us_accidents_processed")
+# spark.sql("DROP TABLE spark_catalog.otpushchennikov_database.otpushchennikov_us_accidents")
+# spark.sql("DROP DATABASE spark_catalog.otpushchennikov_database")
+
+spark.catalog.clearCache()
+spark.stop()
+
+\end{code}
+
+\chapter{Листинг программного кода лабораторной работы №2 первой части}\label{app:C}\vspace{\baselineskip}
+
+\begin{code}
+import os
+import csv
+import time
+import numpy as np
+import pandas as pd
+from pyspark.sql import SparkSession, DataFrame
+from pyspark import SparkConf
+from pyspark.sql.functions import col, lit, coalesce, mean, sqrt, approx_count_distinct
+from pyspark.sql.types import DoubleType
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import (
+    VectorAssembler,
+    StringIndexer,
+    OneHotEncoder,
+    MinMaxScaler,
+    Binarizer
+)
+from pyspark.ml.regression import LinearRegression
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.tuning import CrossValidator, CrossValidatorModel, ParamGridBuilder
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def create_spark_configuration() -> SparkConf:
+    """
+    Создает и конфигурирует экземпляр SparkConf для приложения Spark.
+
+    Returns:
+        SparkConf: Настроенный экземпляр SparkConf.
+    """
+    # Получаем имя пользователя
+    user_name = os.getenv("USER")
+
+    conf = SparkConf()
+    conf.setAppName("lab 2 US Accidents. Linear Regression")
+    conf.setMaster("yarn")
+    conf.set("spark.submit.deployMode", "client")
+    conf.set("spark.executor.memory", "12g")
+    conf.set("spark.executor.cores", "8")
+    conf.set("spark.executor.instances", "2")
+    conf.set("spark.driver.memory", "4g")
+    conf.set("spark.driver.cores", "2")
+    conf.set("spark.jars.packages",
+             "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.0")
+    conf.set("spark.sql.extensions",
+             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    conf.set("spark.sql.catalog.spark_catalog",
+             "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.spark_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.spark_catalog.warehouse",
+             f"hdfs:///user/{user_name}/warehouse")
+    conf.set("spark.sql.catalog.spark_catalog.io-impl",
+             "org.apache.iceberg.hadoop.HadoopFileIO")
+
+    return conf
+
+conf = create_spark_configuration()
+
+spark = SparkSession.builder.config(conf=conf).getOrCreate()
+spark
+
+database_name = "otpushchennikov_database"
+
+spark.catalog.setCurrentDatabase(database_name)
+
+df = spark.table("otpushchennikov_us_accidents_processed")
+
+df.show()
+
+df.printSchema()
+
+df.count()
+
+binary_flags = [
+    "Crossing", "Give_Way", "Junction", "No_Exit",
+    "Railway", "Station", "Stop", "Traffic_Signal"
+]
+float_features = [
+    "Distance(mi)", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)",
+    "Pressure(in)", "Visibility(mi)", "Wind_Speed(mph)", "Precipitation(in)",
+    "Month", "Day_Of_Week", "Hour"
+]
+
+df = df.withColumn("Duration_min", col("Duration_min").cast(DoubleType()))
+for name in float_features:
+    df = df.withColumn(name, col(name).cast(DoubleType()))
+for flag in binary_flags:
+    df = df.withColumn(
+        flag,
+        coalesce(col(flag).cast(DoubleType()), lit(0.0))
+    )
+
+null_label = df.filter(col("Duration_min").isNull()).count()
+print(f"Строк без значения Duration_min: {null_label}")
+
+if null_label > 0:
+    df = df.filter(col("Duration_min").isNotNull())
+
+print(f"Строк в работе: {df.count()}")
+
+df.select(col("Duration_min").alias("value")).summary("50%", "90%", "99%").show()
+
+candidate_categorical = [
+    "State", "Weather_Condition", "Wind_Direction", "Sunrise_Sunset",
+    "Timezone", "Airport_Code", "County", "City", "Zipcode"
+]
+
+cardinality = df.agg(
+    *[approx_count_distinct(col(name)).alias(name) for name in candidate_categorical]
+).toPandas().T
+cardinality.columns = ["число уровней"]
+print(cardinality.sort_values("число уровней", ascending=False).to_string())
+
+def save_sample_to_csv(data: DataFrame, file_path: str,
+                       sample_size: int = 1000) -> DataFrame:
+    """
+    Сохраняет первые `sample_size` строк из DataFrame в CSV-файл на драйвере
+    и возвращает DataFrame с оставшимися данными.
+
+    Args:
+        data (DataFrame): DataFrame, из которого нужно извлечь строки.
+        file_path (str): Путь для сохранения CSV-файла.
+        sample_size (int): Количество строк для сохранения
+            (по умолчанию 1000).
+
+    Returns:
+        DataFrame: DataFrame с оставшимися данными.
+    """
+    # Определяем пропорции для разделения
+    sample_fraction = sample_size / data.count()
+    remaining_fraction = 1 - sample_fraction
+
+    # Разделяем DataFrame на два непересекающихся набора данных
+    sample_data, remaining_data = data.randomSplit(
+        [sample_fraction, remaining_fraction]
+    )
+
+    # Сохраняем извлеченные строки в CSV-файл на драйвере
+    try:
+        with open(file_path, mode="w", newline="") as file:
+            writer = csv.writer(file)
+
+            # Записываем заголовок
+            writer.writerow(data.columns)
+
+            # Записываем строки
+            for row in sample_data.take(sample_size):
+                writer.writerow(row)
+        print(f"Файл \"{file_path}\" с данными успешно создан.")
+
+    except Exception as e:
+        print(f"Ошибка при записи файла: {e}")
+
+    return remaining_data
+
+path = "us_accidents_sample.csv"
+
+df = save_sample_to_csv(data=df, file_path=path, sample_size=1000)
+
+df.count()
+
+train_df, test_df = df.randomSplit([0.8, 0.2])
+
+print(f"Train dataset size: {train_df.count()}")
+print(f"Test  dataset size: {test_df.count()}")
+
+categorical_features = ["State", "Weather_Condition",
+                      "Wind_Direction", "Sunrise_Sunset"]
+binary_features = [
+    "Crossing", "Give_Way", "Junction", "No_Exit",
+    "Railway", "Station", "Stop", "Traffic_Signal"
+]
+numeric_features = [
+    "Distance(mi)", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)",
+    "Pressure(in)", "Visibility(mi)", "Wind_Speed(mph)",
+    "Month", "Day_Of_Week", "Hour"
+]
+binarizable_feature = "Precipitation(in)"
+label_col = "Duration_min"
+threshold = 0.1
+
+total_rows = df.count()
+wet_rows = df.filter(col(binarizable_feature) > threshold).count()
+print(f"Записей с осадками > {threshold} in: {wet_rows} "
+      f"({100.0 * wet_rows / total_rows:.2f} %)")
+
+def create_pipeline(categorical_features: list[str], numeric_features: list[str],
+                    binary_features: list[str], binarized_col: str,
+                    threshold: float, label_col: str, max_iter: int) -> Pipeline:
+    """
+    Создает конвейер подготовки признаков и модель линейной регрессии.
+
+    Args:
+        categorical_features: Список категориальных признаков.
+        numeric_features: Список количественных признаков.
+        binary_features: Список бинарных признаков.
+        binarized_col: Название бинаризуемого признака.
+        threshold: Порог бинаризации.
+        label_col: Название столбца с целевой переменной.
+        max_iter: Максимальное количество итераций для модели.
+
+    Returns:
+        Pipeline: Конвейер подготовки признаков и обучения модели.
+    """
+    # Формируем названия колонок для преобразованных признаков
+    indexed_categorical_features = [f"{feature}_index" for feature in categorical_features]
+    onehot_categorical_features = [f"{feature}_ohe" for feature in categorical_features]
+
+    # Выполняем преобразования данных
+    string_indexer = StringIndexer(inputCols=categorical_features,
+                                   outputCols=indexed_categorical_features,
+                                   handleInvalid="keep")
+    onehot_encoder = OneHotEncoder(inputCols=indexed_categorical_features,
+                                   outputCols=onehot_categorical_features,
+                                   dropLast=True,
+                                   handleInvalid="keep")
+    vector_num_assembler = VectorAssembler(inputCols=numeric_features,
+                                           outputCol="numeric_vector",
+                                           handleInvalid="keep")
+    numeric_scaler = MinMaxScaler(inputCol="numeric_vector",
+                                  outputCol="numeric_vector_scaled")
+    binarizer = Binarizer(inputCol=binarized_col,
+                          outputCol="precipitation_binary",
+                          threshold=threshold)
+    vector_all_assembler = VectorAssembler(
+        inputCols=(onehot_categorical_features + binary_features +
+                   ["numeric_vector_scaled", "precipitation_binary"]),
+        outputCol="features",
+        handleInvalid="keep"
+    )
+
+    # Создаем модель линейной регрессии
+    linear_regression = LinearRegression(featuresCol="features",
+                                         labelCol=label_col,
+                                         predictionCol="prediction",
+                                         standardization=False,
+                                         maxIter=max_iter)
+
+    # Создаем конвейер
+    pipeline = Pipeline(stages=[
+        string_indexer, onehot_encoder, vector_num_assembler,
+        numeric_scaler, binarizer, vector_all_assembler,
+        linear_regression
+    ])
+
+    return pipeline
+
+pipeline = create_pipeline(categorical_features=categorical_features,
+                           numeric_features=numeric_features,
+                           binary_features=binary_features,
+                           binarized_col=binarizable_feature,
+                           threshold=threshold,
+                           label_col=label_col,
+                           max_iter=15)
+
+param_grid = ParamGridBuilder() \
+    .addGrid(pipeline.getStages()[-1].regParam, [0.01, 0.1, 1.0]) \
+    .addGrid(pipeline.getStages()[-1].elasticNetParam, [0.0, 0.5, 1.0]) \
+    .build()
+print(f"Число комбинаций параметров: {len(param_grid)}")
+
+cv_evaluator = RegressionEvaluator(labelCol=label_col,
+                                   predictionCol="prediction",
+                                   metricName="rmse")
+
+train_df = train_df.cache()
+test_df = test_df.cache()
+print(f"Train rows cached: {train_df.count()}")
+
+t0 = time.time()
+single_pipeline_model = pipeline.fit(train_df)
+one_fit_seconds = time.time() - t0
+
+n_fits = len(param_grid) * 5
+print(f"Время одного обучения конвейера: {one_fit_seconds:.1f} сек")
+print(f"Число обучений в кросс-валидации: {n_fits}")
+print(f"Оценка времени подбора: {one_fit_seconds * n_fits / 60:.1f} мин")
+
+cross_validator = CrossValidator(estimator=pipeline,
+                                 estimatorParamMaps=param_grid,
+                                 evaluator=cv_evaluator,
+                                 numFolds=5)
+
+cv_model = cross_validator.fit(train_df)
+
+def get_best_model_params(cv_model: CrossValidatorModel) -> dict[str, float]:
+    """
+    Получает параметры лучшей модели из объекта CrossValidatorModel.
+
+    Args:
+        cv_model (CrossValidatorModel): Объект CrossValidatorModel,
+            содержащий лучшую модель.
+
+    Returns:
+        dict[str, float]: Параметры лучшей модели.
+    """
+    best_model = cv_model.bestModel
+    best_params = {
+        "regParam": best_model.stages[-1].getRegParam(),
+        "elasticNetParam": best_model.stages[-1].getElasticNetParam(),
+        "maxIter": best_model.stages[-1].getMaxIter()
+    }
+    return best_params
+
+for key, value in get_best_model_params(cv_model=cv_model).items():
+    print(f"{key}: {value}")
+
+cv_scores = pd.DataFrame({
+    "regParam": [grid[pipeline.getStages()[-1].regParam] for grid in param_grid],
+    "elasticNetParam": [grid[pipeline.getStages()[-1].elasticNetParam]
+                        for grid in param_grid],
+    "cv_rmse": cv_model.avgMetrics,
+})
+print(cv_scores.sort_values("cv_rmse").to_string(index=False))
+
+lr_model = cv_model.bestModel.stages[-1]
+coefficients = np.array(lr_model.coefficients.toArray())
+
+print(f"Размерность вектора признаков: {coefficients.size}")
+print(f"Обнулено регуляризацией коэффициентов: {(coefficients == 0).sum()}")
+print(f"Наибольший по модулю коэффициент: {np.abs(coefficients).max():.4f}")
+print(f"Свободный член (intercept): {lr_model.intercept:.2f}")
+
+def plot_training_summary(cv_model: CrossValidatorModel) -> None:
+    """
+    Отображает график зависимости значения ошибки от номера итерации на
+    обучающей выборке, а также значения метрик RMSE и R^2.
+
+    Args:
+        cv_model (CrossValidatorModel): Обученная модель с использованием
+            кросс-валидации.
+    """
+    # Получаем лучшую модель
+    best_model = cv_model.bestModel
+
+    # Получаем информацию о процессе обучения
+    training_summary = best_model.stages[-1].summary
+
+    # Получаем значения ошибки для каждой итерации
+    objective_history = training_summary.objectiveHistory
+
+    # Строим график зависимости значения ошибки от номера итерации
+    plt.figure(figsize=(10, 6))
+    sns.lineplot(x=range(len(objective_history)),
+                 y=objective_history,
+                 marker='o')
+    plt.xlabel('Итерация')
+    plt.ylabel('Ошибка')
+    plt.title("Зависимость значения функции ошибки от номера итерации")
+
+    # Получаем значения метрик
+    rmse = training_summary.rootMeanSquaredError
+    r2 = training_summary.r2
+
+    # Добавляем значения метрик на график
+    plt.text(0.95, 0.95, f"RMSE: {rmse:.2f}\nR^2: {r2:.4f}",
+             transform=plt.gca().transAxes, ha='right', va='top',
+             bbox=dict(facecolor='white', alpha=0.8), zorder=5)
+    plt.grid()
+
+    plt.show()
+
+plot_training_summary(cv_model)
+
+# Получаем датасет предсказаний
+test_df_predictions = cv_model.transform(test_df)
+
+# Извлекаем список колонок, устанавливаем метку и предсказание на последнее место
+right_columns_order = test_df_predictions.columns
+right_columns_order.remove(label_col)
+right_columns_order.append(label_col)
+right_columns_order.remove("prediction")
+right_columns_order.append("prediction")
+
+# Изменяем последовательность колонок и выводим датафрейм
+test_df_predictions = test_df_predictions.select(*right_columns_order)
+test_df_predictions.show()
+
+def evaluate_model(data: DataFrame, metric_name: str) -> float:
+    """
+    Оценивает модель с использованием указанной метрики.
+
+    Args:
+        data (DataFrame): DataFrame, содержащий предсказания и фактические метки.
+        metric_name (str): Название метрики для оценки
+            (например, "rmse", "r2", "mae").
+
+    Returns:
+        float: Значение указанной метрики.
+    """
+    evaluator = RegressionEvaluator(labelCol=label_col,
+                                    predictionCol="prediction",
+                                    metricName=metric_name)
+    metric_value = evaluator.evaluate(data)
+    return metric_value
+
+test_rmse = evaluate_model(test_df_predictions, "rmse")
+test_r2 = evaluate_model(test_df_predictions, "r2")
+test_mae = evaluate_model(test_df_predictions, "mae")
+
+print(f"RMSE on test data: {test_rmse:.2f}")
+print(f"R^2  on test data: {test_r2:.4f}")
+print(f"MAE  on test data: {test_mae:.2f}")
+
+median_duration = train_df.approxQuantile(label_col, [0.5], 0.001)[0]
+print(f"Медиана Duration_min в обучающей выборке: {median_duration:.2f} мин")
+
+baseline_rmse = (
+    test_df
+    .withColumn("residual", col(label_col) - median_duration)
+    .select(sqrt(mean(col("residual") * col("residual"))).alias("rmse"))
+    .collect()[0]["rmse"]
+)
+print(f"Baseline RMSE (константа = медиана): {baseline_rmse:.2f}")
+print(f"Изменение RMSE относительно baseline: "
+      f"{100.0 * (test_rmse - baseline_rmse) / baseline_rmse:.2f} %")
+
+
+predictions_pandas = (
+    test_df_predictions
+    .sample(withReplacement=False, fraction=0.02, seed=17)
+    .select(label_col, "prediction")
+    .toPandas()
+)
+predictions_pandas["bucket"] = pd.qcut(predictions_pandas[label_col],
+                                       q=10,
+                                       labels=False,
+                                       duplicates="drop")
+
+bucketed = (
+    predictions_pandas
+    .groupby("bucket")
+    .agg(actual=(label_col, "mean"),
+         predicted=("prediction", "mean"),
+         n=(label_col, "size"))
+)
+print(bucketed.round(2).to_string())
+
+student_hdfs_folder = "otpushchennikov_directory"
+# Получаем имя пользователя
+user_name = os.getenv("USER")
+
+# Путь модели в HDFS
+model_hdfs_path = f"hdfs:///user/{user_name}/{student_hdfs_folder}/models/lab2-lr-duration-model"
+
+# Сохраняем модель конвейера в HDFS
+try:
+    cv_model.bestModel.save(model_hdfs_path)
+    print(f"Модель успешно сохранена в \"{model_hdfs_path}\"")
+except Exception as e:
+    print(f"Ошибка при сохранении модели: {e}")
+
+spark.catalog.clearCache()
+spark.stop()
+\end{code}
+
+\chapter{Листинг программного кода лабораторной работы №2 второй части}\label{app:D}\vspace{\baselineskip}
+
+\begin{code}
+import os
+import time
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark import SparkConf
+from pyspark.sql.functions import (
+    col, lit, coalesce, when, desc, avg, sum as spark_sum,
+    array_repeat, explode, approx_count_distinct
+)
+from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import (
+    VectorAssembler,
+    StringIndexer,
+    Binarizer,
+    Bucketizer
+)
+from pyspark.ml.functions import vector_to_array
+from pyspark.ml.classification import (
+    RandomForestClassifier,
+    RandomForestClassificationModel
+)
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+from pyspark.ml.tuning import CrossValidator, CrossValidatorModel, ParamGridBuilder
+
+def create_spark_configuration() -> SparkConf:
+    """
+    Создает и конфигурирует экземпляр SparkConf для приложения Spark.
+
+    Returns:
+        SparkConf: Настроенный экземпляр SparkConf.
+    """
+    # Получаем имя пользователя
+    user_name = os.getenv("USER")
+
+    conf = SparkConf()
+    conf.setAppName("lab 2 US Accidents. Random Forest Classification")
+    conf.setMaster("yarn")
+    conf.set("spark.submit.deployMode", "client")
+    conf.set("spark.executor.memory", "12g")
+    conf.set("spark.executor.cores", "8")
+    conf.set("spark.executor.instances", "2")
+    conf.set("spark.driver.memory", "4g")
+    conf.set("spark.driver.cores", "2")
+    conf.set("spark.jars.packages",
+             "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.0")
+    conf.set("spark.sql.extensions",
+             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    conf.set("spark.sql.catalog.spark_catalog",
+             "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.spark_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.spark_catalog.warehouse",
+             f"hdfs:///user/{user_name}/warehouse")
+    conf.set("spark.sql.catalog.spark_catalog.io-impl",
+             "org.apache.iceberg.hadoop.HadoopFileIO")
+
+    return conf
+
+conf = create_spark_configuration()
+
+spark = SparkSession.builder.config(conf=conf).getOrCreate()
+spark
+
+database_name = "otpushchennikov_database"
+
+spark.catalog.setCurrentDatabase(database_name)
+
+df = spark.table("otpushchennikov_us_accidents_processed")
+
+df.show()
+
+df.printSchema()
+
+df.count()
+
+binary_flags = [
+    "Crossing", "Give_Way", "Junction", "No_Exit",
+    "Railway", "Station", "Stop", "Traffic_Signal"
+]
+float_features = [
+    "Distance(mi)", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)",
+    "Pressure(in)", "Visibility(mi)", "Wind_Speed(mph)", "Precipitation(in)",
+    "Month", "Day_Of_Week", "Hour"
+]
+
+label_col = "is_severe"
+
+rows_before = df.count()
+df = df.filter(col("Severity").isNotNull())
+print(f"Строк без значения Severity: {rows_before - df.count()}")
+
+df = df.withColumn(label_col,
+                   when(col("Severity") >= 3, 1).otherwise(0).cast(IntegerType()))
+df = df.withColumn("Duration_min", col("Duration_min").cast(DoubleType()))
+for name in float_features:
+    df = df.withColumn(name, col(name).cast(DoubleType()))
+for flag in binary_flags:
+    df = df.withColumn(
+        flag,
+        coalesce(col(flag).cast(DoubleType()), lit(0.0))
+    )
+
+df.groupBy(label_col).count().orderBy(desc(label_col)).show()
+
+def stratified_train_test_split(data: DataFrame,
+                                label_col: str,
+                                ratio: float) -> tuple[DataFrame, DataFrame]:
+    """
+    Разделяет DataFrame на тренировочный и тестовый наборы с учетом стратификации.
+
+    Args:
+        data: Исходный DataFrame.
+        label_col: Название колонки с меткой.
+        ratio: Пропорция разделения данных.
+
+    Returns:
+        tuple[DataFrame, DataFrame]: Кортеж из тренировочного и тестового DataFrame.
+    """
+    # Проверяем корректность доли разделения
+    assert (isinstance(ratio, float) and (0.0 <= ratio <= 1.0))
+
+    # Формируем разделение для положительных и отрицательных объектов раздельно
+    train_df_pos, test_df_pos = (data
+                                 .filter(col(label_col) == 1)
+                                 .randomSplit([ratio, 1 - ratio]))
+    train_df_neg, test_df_neg = (data
+                                 .filter(col(label_col) == 0)
+                                 .randomSplit([ratio, 1 - ratio]))
+
+    # Объединяем датафреймы
+    return (train_df_pos.union(train_df_neg),
+            test_df_pos.union(test_df_neg))
+
+train_df, test_df = stratified_train_test_split(df, label_col, 0.8)
+
+def oversample(data: DataFrame, column: str) -> DataFrame:
+    """
+    Выполняет oversampling положительных классов в DataFrame.
+
+    Args:
+        data: Исходный DataFrame.
+        column: Название столбца с меткой.
+
+    Returns:
+        DataFrame: Датафрейм с выполненным oversampling.
+    """
+    # Разделим датафрейм на положительные и отрицательные классы
+    pos = data.filter(col(column) == 1)
+    neg = data.filter(col(column) == 0)
+
+    # Получим количество записей в каждом классе
+    total_pos = pos.count()
+    total_neg = neg.count()
+
+    # Если количество положительных классов меньше отрицательных,
+    # выполним oversampling
+    if total_pos < total_neg:
+        # Вычислим количество необходимых дубликатов
+        num_duplicates = total_neg - total_pos
+
+        # Дублируем положительные записи: каждая строка разворачивается
+        # в требуемое число копий
+        oversampled_pos = (
+            pos
+            .withColumn("dummy", array_repeat(lit(1),
+                                              num_duplicates // total_pos + 1))
+            .withColumn("dummy", explode("dummy"))
+            .drop("dummy")
+        )
+
+        # Объединим дублированные положительные записи с отрицательными
+        balanced_df = neg.union(oversampled_pos)
+    else:
+        balanced_df = data
+
+    return balanced_df
+
+train_df = oversample(train_df, column=label_col)
+
+train_df.groupBy(label_col).count().orderBy(desc(label_col)).show()
+
+train_df = train_df.cache()
+test_df = test_df.cache()
+
+print(f"Train dataset size: {train_df.count()}")
+print(f"Test  dataset size: {test_df.count()}")
+
+categorical_features = ["State", "Weather_Condition",
+                      "Wind_Direction", "Sunrise_Sunset"]
+binary_features = [
+    "Crossing", "Give_Way", "Junction", "No_Exit",
+    "Railway", "Station", "Stop", "Traffic_Signal"
+]
+numeric_features = [
+    "Distance(mi)", "Temperature(F)", "Wind_Chill(F)", "Humidity(%)",
+    "Pressure(in)", "Visibility(mi)", "Wind_Speed(mph)", "Duration_min",
+    "Month", "Day_Of_Week", "Hour"
+]
+binarizable_feature = "Precipitation(in)"
+threshold = 0.1
+
+cardinality = train_df.agg(
+    *[approx_count_distinct(col(name)).alias(name) for name in categorical_features]
+).toPandas().T
+cardinality.columns = ["число уровней"]
+print(cardinality.sort_values("число уровней", ascending=False).to_string())
+
+def create_pipeline(categorical_features: list[str], numeric_features: list[str],
+                    binary_features: list[str], binarized_col: str,
+                    threshold: float, label_col: str, num_trees: int,
+                    max_bins: int, seed: int) -> Pipeline:
+    """
+    Создает конвейер подготовки признаков и модель случайного леса.
+
+    Args:
+        categorical_features: Список категориальных признаков.
+        numeric_features: Список количественных признаков.
+        binary_features: Список бинарных признаков.
+        binarized_col: Название бинаризуемого признака.
+        threshold: Порог бинаризации.
+        label_col: Название столбца с меткой.
+        num_trees: Число деревьев в лесу.
+        max_bins: Число корзин: должно быть не меньше числа уровней
+            самого «широкого» категориального признака.
+        seed: Зерно генератора случайных чисел (для воспроизводимости).
+
+    Returns:
+        Pipeline: Конвейер подготовки признаков и обучения модели.
+    """
+    # Формируем названия колонок для преобразованных признаков
+    indexed_categorical_features = [f"{feature}_index" for feature in categorical_features]
+
+    # Выполняем преобразования данных
+    string_indexer = StringIndexer(inputCols=categorical_features,
+                                   outputCols=indexed_categorical_features,
+                                   handleInvalid="keep")
+    binarizer = Binarizer(inputCol=binarized_col,
+                          outputCol="precipitation_binary",
+                          threshold=threshold)
+    vector_all_assembler = VectorAssembler(
+        inputCols=(indexed_categorical_features + binary_features +
+                   numeric_features + ["precipitation_binary"]),
+        outputCol="features",
+        handleInvalid="keep"
+    )
+
+    # Создаем модель случайного леса
+    random_forest = RandomForestClassifier(featuresCol="features",
+                                           labelCol=label_col,
+                                           predictionCol="prediction",
+                                           numTrees=num_trees,
+                                           maxBins=max_bins,
+                                           seed=seed)
+
+    # Создаем конвейер
+    pipeline = Pipeline(stages=[
+        string_indexer, binarizer, vector_all_assembler, random_forest
+    ])
+
+    return pipeline
+
+pipeline = create_pipeline(categorical_features=categorical_features,
+                           numeric_features=numeric_features,
+                           binary_features=binary_features,
+                           binarized_col=binarizable_feature,
+                           threshold=threshold,
+                           label_col=label_col,
+                           num_trees=50,
+                           max_bins=64,
+                           seed=2026)
+
+feature_names = (
+    [f"{feature}_index" for feature in categorical_features]
+    + binary_features
+    + numeric_features
+    + ["precipitation_binary"]
+)
+
+t0 = time.time()
+single_pipeline_model = pipeline.fit(train_df)
+one_fit_seconds = time.time() - t0
+
+print(f"Время одного обучения конвейера со случайным лесом: {one_fit_seconds:.1f} сек")
+print(f"Оценка времени полной сетки 3 x 3 при пяти фолдах: "
+      f"{one_fit_seconds * 45 / 3600:.1f} ч")
+
+# param_grid = ParamGridBuilder() \
+#     .addGrid(pipeline.getStages()[-1].maxDepth, [4, 6, 8]) \
+#     .addGrid(pipeline.getStages()[-1].numTrees, [50, 100, 200]) \
+#     .build()
+
+param_grid = ParamGridBuilder() \
+    .addGrid(pipeline.getStages()[-1].maxDepth, [4, 6]) \
+    .addGrid(pipeline.getStages()[-1].numTrees, [50]) \
+    .build()
+print(f"Число комбинаций параметров: {len(param_grid)}")
+
+cv_evaluator = BinaryClassificationEvaluator(labelCol=label_col)
+
+cross_validator = CrossValidator(estimator=pipeline,
+                                 estimatorParamMaps=param_grid,
+                                 evaluator=cv_evaluator,
+                                 numFolds=5)
+
+cv_model = cross_validator.fit(train_df)
+
+def get_best_model_params(cv_model: CrossValidatorModel) -> dict[str, int]:
+    """
+    Получает параметры лучшей модели из объекта CrossValidatorModel.
+
+    Args:
+        cv_model: Объект CrossValidatorModel, содержащий лучшую модель.
+
+    Returns:
+        dict[str, int]: Параметры лучшей модели.
+    """
+    best_model = cv_model.bestModel
+    best_params = {
+        "maxDepth": best_model.stages[-1].getMaxDepth(),
+        "numTrees": best_model.stages[-1].getNumTrees,
+        "maxBins": best_model.stages[-1].getMaxBins()
+    }
+    return best_params
+
+for key, value in get_best_model_params(cv_model=cv_model).items():
+    print(f"{key}: {value}")
+
+cv_scores = pd.DataFrame({
+    "maxDepth": [grid[pipeline.getStages()[-1].maxDepth] for grid in param_grid],
+    "numTrees": [grid[pipeline.getStages()[-1].numTrees] for grid in param_grid],
+    "cv_auc_roc": cv_model.avgMetrics,
+})
+print(cv_scores.sort_values("cv_auc_roc", ascending=False).to_string(index=False))
+
+rf_model = cv_model.bestModel.stages[-1]
+importances = np.array(rf_model.featureImportances.toArray())
+
+importance_df = (
+    pd.DataFrame({"признак": feature_names, "важность": importances})
+    .sort_values("важность", ascending=False)
+)
+print(importance_df.head(15).to_string(index=False))
+print(f"Суммарная важность топ-5 признаков: {importance_df['важность'].head(5).sum():.4f}")
+
+# Получаем датасет предсказаний
+test_df_predictions = cv_model.transform(test_df)
+
+# Извлекаем список колонок, устанавливаем метку и предсказание на последнее место
+right_columns_order = test_df_predictions.columns
+right_columns_order.remove(label_col)
+right_columns_order.append(label_col)
+right_columns_order.remove("prediction")
+right_columns_order.append("prediction")
+
+# Изменяем последовательность колонок и выводим датафрейм
+test_df_predictions = test_df_predictions.select(*right_columns_order)
+test_df_predictions.show()
+
+def evaluate_model(data: DataFrame, label_col: str) -> dict[str, float]:
+    """
+    Оценивает модель с использованием метрик точности, полноты и F1-score.
+
+    Args:
+        data: DataFrame, содержащий предсказания и фактические метки.
+        label_col: Название колонки с меткой.
+
+    Returns:
+        dict[str, float]: Словарь с метриками точности, полноты и F1-score.
+    """
+    # Вычисляем TP, FP, FN
+    tp = data.filter((col(label_col) == 1) &
+                     (col("prediction") == 1)).count()
+    fp = data.filter((col(label_col) == 0) &
+                     (col("prediction") == 1)).count()
+    fn = data.filter((col(label_col) == 1) &
+                     (col("prediction") == 0)).count()
+
+    # Вычисляем метрики
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = (2 * (precision * recall) / (precision + recall)
+          if (precision + recall) > 0 else 0)
+
+    # Возвращаем словарь с метриками
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1
+    }
+
+metrics = evaluate_model(test_df_predictions, label_col)
+print(f"Metrics: {metrics}")
+
+counts = (
+    test_df
+    .agg(spark_sum(when(col(label_col) == 1, 1).otherwise(0)).alias("pos"),
+         spark_sum(when(col(label_col) == 0, 1).otherwise(0)).alias("neg"))
+    .first()
+)
+total_test = counts["pos"] + counts["neg"]
+
+print(f"Доля мажоритарного класса (accuracy «всегда 0»): "
+      f"{100.0 * counts['neg'] / total_test:.2f} %")
+print(f"Доля миноритарного класса (precision «всегда 1»): "
+      f"{100.0 * counts['pos'] / total_test:.2f} %")
+    
+def calculate_auc_roc(model: RandomForestClassificationModel,
+                      test_data: DataFrame,
+                      label_col: str) -> float:
+    """
+    Рассчитывает значение AUC ROC для модели.
+
+    Args:
+        model: Обученная модель классификации.
+        test_data: Тестовый набор данных.
+        label_col: Название столбца с меткой.
+
+    Returns:
+        float: Значение AUC ROC.
+    """
+    # Получаем прогнозы модели
+    predictions = model.transform(test_data)
+
+    # Создаем "оценщик" бинарной классификации
+    evaluator = BinaryClassificationEvaluator(
+        rawPredictionCol="rawPrediction",
+        labelCol=label_col
+    )
+
+    # Вычисляем AUC ROC
+    auc_roc = evaluator.evaluate(predictions)
+
+    return auc_roc
+
+def prepare_metrics_df(predictions: DataFrame, label_col: str) -> DataFrame:
+    """
+    Подготавливает DataFrame для расчета FPR, TPR и Precision.
+
+    Args:
+        predictions: DataFrame с прогнозами модели.
+        label_col: Название колонки с меткой.
+
+    Returns:
+        DataFrame: DataFrame с рассчитанными столбцами FPR, TPR и Precision.
+    """
+    # Формируем датафрейм, содержащий результат предсказания,
+    # вероятность предсказания и метку
+    metrics_df = (
+        predictions
+        .select(
+            vector_to_array(col("probability")).getItem(1).alias("probability"),
+            col(label_col).alias("label"),
+            col("prediction").cast("int").alias("prediction")
+        )
+    )
+
+    # Сортируем датафрейм по значениям вероятности
+    metrics_df = metrics_df.orderBy("probability")
+
+    # Рассчитываем количество положительных и отрицательных классов
+    pos_count = metrics_df.filter(metrics_df.label == 1).count()
+    neg_count = metrics_df.filter(metrics_df.label == 0).count()
+
+    # Рассчитываем значения FPR и TPR
+    window = Window.partitionBy().orderBy(desc("probability"))
+    metrics_df = (
+        metrics_df
+        .withColumn("FP_cum",
+                    spark_sum(when(col("label") == 0, 1).otherwise(0)).over(window))
+        .withColumn("TP_cum", spark_sum(col("label")).over(window))
+        .withColumn("FPR", col("FP_cum") / neg_count)
+        .withColumn("TPR", col("TP_cum") / pos_count)
+        .withColumn("Precision",
+                    col("TP_cum") / (col("TP_cum") + col("FP_cum")))
+    )
+
+    return metrics_df
+
+def bucketize_metrics_df(metrics_df: DataFrame,
+                         num_buckets: int = 1000) -> DataFrame:
+    """
+    Применяет Bucketizer к DataFrame для уменьшения объёма данных,
+    возвращаемых на драйвер.
+
+    Args:
+        metrics_df: DataFrame с рассчитанными столбцами FPR, TPR и Precision.
+        num_buckets: Количество бакетов.
+
+    Returns:
+        DataFrame: Бакетизированный DataFrame.
+    """
+    # Определяем границы бакетов. Верхнюю границу сдвигаем выше единицы,
+    # иначе строки с вероятностью ровно 1,0 выходят за последнее значение
+    # splits и Bucketizer с handleInvalid="error" аварийно остановит этап.
+    splits = list(np.linspace(0, 1, num_buckets + 1))
+    splits[-1] = 1.0 + 1e-9
+    bucketizer = Bucketizer(
+        splits=splits,
+        inputCol="probability",
+        outputCol="bucket"
+    )
+
+    # Применяем Bucketizer
+    metrics_df = bucketizer.setHandleInvalid("error").transform(metrics_df)
+
+    # Формируем одну точку из каждого бакета
+    metrics_df = metrics_df.groupBy("bucket").agg(
+        avg(col("probability")).alias("probability"),
+        avg(col("FPR")).alias("FPR"),
+        avg(col("TPR")).alias("TPR"),
+        avg(col("Precision")).alias("Precision")
+    )
+
+    return metrics_df
+
+def calculate_metrics(model: RandomForestClassificationModel,
+                      test_data: DataFrame,
+                      label_col: str) -> pd.DataFrame:
+    """
+    Рассчитывает значения FPR, TPR и Precision для построения ROC и PR-кривых.
+
+    Args:
+        model: Обученная модель классификации.
+        test_data: Тестовый набор данных.
+        label_col: Название столбца с меткой.
+
+    Returns:
+        pd.DataFrame: DataFrame со значениями FPR, TPR и Precision.
+    """
+    # Получаем прогнозы модели
+    predictions = model.transform(test_data)
+
+    # Подготавливаем DataFrame для расчета FPR, TPR и Precision
+    metrics_df = prepare_metrics_df(predictions, label_col)
+
+    # Применяем Bucketizer к DataFrame
+    metrics_df = bucketize_metrics_df(metrics_df)
+
+    return metrics_df.toPandas()
+
+def plot_roc_pr_curves(pd_data: pd.DataFrame,
+                       auc_roc: float) -> None:
+    """
+    Визуализирует ROC и PR-кривые, добавляет на график AUC ROC.
+
+    Args:
+        pd_data: Pandas DataFrame, содержащий столбцы "FPR", "TPR", "Precision".
+        auc_roc: Значение AUC-ROC.
+
+    Returns:
+        None
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(20, 6))
+
+    # Построение ROC-кривой
+    sns.lineplot(x="FPR", y="TPR", data=pd_data, ax=axes[0])
+    sns.lineplot(x=[0, 1], y=[0, 1],
+                 color="gray", linestyle="--", ax=axes[0])
+    axes[0].set_xlabel("False Positive Rate (FPR)")
+    axes[0].set_ylabel("True Positive Rate (TPR)")
+    axes[0].set_title("ROC Curve")
+    axes[0].grid()
+
+    # Добавляем значение AUC-ROC в правом нижнем углу графика
+    axes[0].text(0.94, 0.06, f'AUC-ROC: {auc_roc:.2f}',
+                 transform=axes[0].transAxes,
+                 fontsize=12, verticalalignment='bottom',
+                 horizontalalignment='right',
+                 bbox=dict(facecolor='white', alpha=0.8), zorder=5)
+
+    # Построение PR-кривой
+    sns.lineplot(x="TPR", y="Precision", data=pd_data, ax=axes[1])
+    axes[1].set_xlabel("Recall")
+    axes[1].set_ylabel("Precision")
+    axes[1].set_title("PR Curve")
+    axes[1].grid()
+
+    plt.tight_layout()
+    plt.show()
+
+# Рассчитываем AUC ROC
+auc_roc = calculate_auc_roc(model=cv_model,
+                            test_data=test_df,
+                            label_col=label_col)
+pd_dataframe = calculate_metrics(model=cv_model,
+                                 test_data=test_df,
+                                 label_col=label_col)
+print(f"AUC ROC: {auc_roc:.4f}")
+plot_roc_pr_curves(pd_dataframe, auc_roc)
+
+threshold_probability = pd_dataframe[pd_dataframe['TPR'] >= 0.60]['probability'].max()
+print(f"Вероятность -- граница разделения, при которой TPR не меньше 60%: "
+      f"{threshold_probability:.2f}")
+
+cv_model.bestModel.stages[-1].setThresholds([1 - threshold_probability,
+                                             threshold_probability])
+test_df_predictions = cv_model.transform(test_df)
+metrics = evaluate_model(test_df_predictions, label_col)
+print(f"Metrics: {metrics}")
+
+spark.catalog.clearCache()
+spark.stop()
+\end{code}
